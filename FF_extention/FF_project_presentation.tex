@@ -1,0 +1,264 @@
+\documentclass[aspectratio=169]{beamer}
+\usetheme{Madrid}
+
+\title{Forward-Forward Algorithm Extension Study}
+\subtitle{Goodness Function and Activation Function Exploration on MNIST}
+\author{Project Presentation}
+\date{\today}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+\end{frame}
+
+\begin{frame}{Project Goals}
+\begin{itemize}
+  \item Reproduce and extend key ideas from Hinton's Forward-Forward (FF) algorithm paper.
+  \item Objective 1: Compare multiple goodness functions while fixing activation to ReLU.
+  \item Objective 2: Compare multiple activation functions while fixing goodness to \texttt{sum\_sq}.
+  \item Objective 3: Study local/spatial FF learning and goodness margins with locally connected layers.
+  \item Analyze why specific alternatives (for example \texttt{pnorm\_3}) outperform baseline \texttt{(sum\_sq, relu)}.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Original Paper: Core FF Concepts}
+\begin{itemize}
+  \item FF replaces end-to-end backpropagation with \textbf{local layer-wise objectives}.
+  \item Each layer is trained to assign higher \textbf{goodness} to positive samples than negative samples.
+  \item Positive sample: image with correct label overlay; negative sample: image with wrong label overlay.
+  \item Learning is local: each layer has its own optimizer and objective, no backward gradient through all layers.
+  \item Inference uses label search: evaluate all labels and pick the label with the highest total goodness.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Original Paper: Key Equations}
+For one layer with activation vector \(\mathbf{y}\):
+\[
+g(\mathbf{y}) = \sum_j y_j^2
+\]
+
+Common FF logistic objective for positive and negative samples:
+\[
+\mathcal{L} = \log\left(1+e^{-(g^+ - \theta)}\right) + \log\left(1+e^{(g^- - \theta)}\right)
+\]
+
+where:
+\begin{itemize}
+  \item \(g^+\): goodness on positive data
+  \item \(g^-\): goodness on negative data
+  \item \(\theta\): goodness threshold
+\end{itemize}
+
+Prediction by label search:
+\[
+\hat{y} = \arg\max_c \sum_{\ell} g_{\ell}(x, c)
+\]
+\end{frame}
+
+\begin{frame}{What We Implemented}
+\begin{itemize}
+  \item Dataset: MNIST with label overlay mechanism for positive/negative FF learning.
+  \item Objectives 1 and 2 model: FF fully connected network, hidden dims \texttt{(512, 512, 512)}.
+  \item Objective 3 model: locally connected spatial FF blocks (no weight sharing).
+  \item Reproducibility: deterministic seeding for \texttt{torch}, \texttt{numpy}, and \texttt{random}.
+  \item Stronger runs use increased epochs and larger train subset with full 10,000-image test set.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Objective 1: Goodness Functions Chosen}
+We tested 14 goodness functions. Four important ones:
+\begin{itemize}
+  \item \textbf{sum\_sq} (baseline): \(\sum_j y_j^2\), rewards large activations strongly.
+  \item \textbf{sum\_huber\_like}: smooth robust form between L1-like and L2-like behavior.
+  \item \textbf{pnorm\_1\_5}: softer than L2, may reduce dominance of outliers.
+  \item \textbf{pnorm\_3}: steeper than L2, amplifies highly informative activations.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Objective 1 Full Results (Part 1 of 2)}
+\scriptsize
+\begin{table}[h]
+\centering
+\begin{tabular}{l l r r r}
+\hline
+Rank & Goodness & Train Loss & Test Error & Test Accuracy \\
+\hline
+0 & pnorm\_3 & 0.506840 & 0.0446 & 0.9554 \\
+1 & sum\_huber\_like & 0.915776 & 0.0601 & 0.9399 \\
+2 & sum\_sq (baseline) & 0.557461 & 0.0737 & 0.9263 \\
+3 & neg\_sum\_sq & 0.451928 & 0.0741 & 0.9259 \\
+4 & log1p\_sum\_sq & 0.648728 & 0.0777 & 0.9223 \\
+5 & sqrt\_sum\_sq & 0.673295 & 0.0941 & 0.9059 \\
+6 & mean\_sq & 1.157837 & 0.0988 & 0.9012 \\
+\hline
+\end{tabular}
+\end{table}
+\normalsize
+\end{frame}
+
+\begin{frame}{Objective 1 Full Results (Part 2 of 2)}
+\scriptsize
+\begin{table}[h]
+\centering
+\begin{tabular}{l l r r r}
+\hline
+Rank & Goodness & Train Loss & Test Error & Test Accuracy \\
+\hline
+7 & mean\_abs & 1.306145 & 0.1519 & 0.8481 \\
+8 & neg\_sum\_abs & 1.053865 & 0.2035 & 0.7965 \\
+9 & neg\_sum\_linear & 1.110900 & 0.2341 & 0.7659 \\
+10 & pnorm\_1\_5 & 1.012079 & 0.3024 & 0.6976 \\
+11 & sum\_abs & 1.143102 & 0.5134 & 0.4866 \\
+12 & sum\_linear & 1.145557 & 0.5487 & 0.4513 \\
+13 & sum\_softplus & 352.891398 & 0.9020 & 0.0980 \\
+\hline
+\end{tabular}
+\end{table}
+\normalsize
+
+\textbf{Key comparison:} \texttt{pnorm\_3 + relu} beat baseline \texttt{sum\_sq + relu} by +2.91 accuracy points.
+\end{frame}
+
+\begin{frame}{Why pnorm\_3 Can Exceed the Baseline}
+\begin{itemize}
+  \item \textbf{Salient-feature amplification:} \(p=3\) grows faster than squared magnitude for high activations.
+  \item \textbf{Margin widening:} FF optimization benefits when positive and negative goodness are easier to separate.
+  \item \textbf{Reduced medium-response influence:} relative emphasis shifts toward strongest discriminative neurons.
+  \item \textbf{Synergy with ReLU:} non-negative activations plus steeper norm can improve class evidence concentration.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Objective 2: What We Did and Why ReLU Won}
+\begin{itemize}
+  \item Fixed goodness function to \texttt{sum\_sq}; changed only activation (17 candidates).
+  \item Purpose: isolate activation impact on FF goodness separation.
+  \item ReLU achieved top test accuracy (0.9263), with GELU and SiLU close behind.
+  \item Why ReLU likely helped:
+  \begin{itemize}
+    \item Non-saturating positive branch supports stable optimization.
+    \item Sparse activations can improve goodness contrast for positive/negative pairs.
+    \item Simple shape may regularize better under local FF updates.
+  \end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Objective 2 Full Results (Part 1 of 2)}
+\scriptsize
+\begin{table}[h]
+\centering
+\begin{tabular}{l l r r r}
+\hline
+Rank & Activation & Train Loss & Test Error & Test Accuracy \\
+\hline
+0 & relu (Baseline) & 0.557461 & 0.0737 & 0.9263 \\
+1 & gelu & 0.455380 & 0.0794 & 0.9206 \\
+2 & silu & 0.534094 & 0.0862 & 0.9138 \\
+3 & leaky\_relu & 0.412336 & 0.0881 & 0.9119 \\
+4 & student\_t\_nll\_df5 & 0.515548 & 0.0891 & 0.9109 \\
+5 & student\_t\_nll\_df3 & 0.529816 & 0.0931 & 0.9069 \\
+6 & student\_t\_nll\_df2 & 0.541876 & 0.0955 & 0.9045 \\
+7 & tanhshrink & 0.661014 & 0.0968 & 0.9032 \\
+8 & mish & 0.574569 & 0.0988 & 0.9012 \\
+\hline
+\end{tabular}
+\end{table}
+\normalsize
+\end{frame}
+
+\begin{frame}{Objective 2 Full Results (Part 2 of 2)}
+\scriptsize
+\begin{table}[h]
+\centering
+\begin{tabular}{l l r r r}
+\hline
+Rank & Activation & Train Loss & Test Error & Test Accuracy \\
+\hline
+9 & bent\_identity & 1.075029 & 0.1526 & 0.8474 \\
+10 & softsign & 1.109407 & 0.1810 & 0.8190 \\
+11 & selu & 1.040589 & 0.2195 & 0.7805 \\
+12 & tanh & 1.114266 & 0.2211 & 0.7789 \\
+13 & elu & 1.114191 & 0.2973 & 0.7027 \\
+14 & hardtanh & 1.210148 & 0.3102 & 0.6898 \\
+15 & softplus & 1.843963 & 0.7705 & 0.2295 \\
+16 & squareplus & 5.145962 & 0.8865 & 0.1135 \\
+\hline
+\end{tabular}
+\end{table}
+\normalsize
+\end{frame}
+
+\begin{frame}{Objective 3: Local Spatial Goodness}
+\begin{itemize}
+  \item Used locally connected FF layers (patch-based processing, no weight sharing).
+  \item Intuition: learn local evidence blocks and combine them layer by layer.
+  \item Tested 4 spatial setups (coarse/finer blocks, unsquared goodness, Student-t activation).
+  \item Tracked both classification metrics (test accuracy/error) and \textbf{goodness margin}:
+\[
+\text{goodness margin} = \text{train\_pos\_goodness} - \text{train\_neg\_goodness}
+\]
+  \item Larger margin means better separation between positive and negative local representations.
+  \item Important outcome: higher local margin did \textbf{not} translate to strong classification accuracy here.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Objective 3 Full Results (Updated)}
+\scriptsize
+\begin{table}[h]
+\centering
+\begin{tabular}{l r r r r r r r}
+\hline
+Setup & Epoch & Train Loss & Pos Goodness & Neg Goodness & Margin & Test Acc & Test Err \\
+\hline
+unsquared\_goodness & 10 & 1.335932 & 1.094110 & 0.950601 & 0.143510 & 0.5781 & 0.4219 \\
+student\_t\_activation & 10 & 1.337863 & 2.092228 & 1.931047 & 0.161182 & 0.5159 & 0.4841 \\
+finer\_blocks & 10 & 1.363065 & 2.039513 & 1.966984 & 0.072529 & 0.4870 & 0.5130 \\
+coarse\_blocks & 10 & 1.352231 & 2.060941 & 1.947516 & 0.113425 & 0.4453 & 0.5547 \\
+\hline
+\end{tabular}
+\end{table}
+\normalsize
+
+\textbf{Reading this table:} best local-spatial test accuracy is only 0.5781 (57.81\%).
+\end{frame}
+
+\begin{frame}{Objective 3 vs Original Baseline}
+\begin{table}[h]
+\centering
+\begin{tabular}{l r r}
+\hline
+Model & Test Accuracy & Test Error \\
+\hline
+Original baseline (sum\_sq + relu, FC FF) & 0.9263 & 0.0737 \\
+Best local-spatial setup (unsquared\_goodness) & 0.5781 & 0.4219 \\
+\hline
+\end{tabular}
+\end{table}
+
+\vspace{0.2cm}
+\textbf{Conclusion for Objective 3:} in this run, local-spatial FF clearly underperformed the original baseline by
+\(0.9263 - 0.5781 = 0.3482\) accuracy points (34.82 percentage points).
+\end{frame}
+
+\begin{frame}{Conclusion and Limitations}
+\begin{itemize}
+  \item Objective 1: goodness design matters; \texttt{pnorm\_3} exceeded baseline \texttt{sum\_sq}.
+  \item Objective 2: ReLU was the strongest activation under fixed \texttt{sum\_sq} goodness.
+  \item Objective 3: local-spatial FF underperformed baseline in this run (57.81\% vs 92.63\%).
+  \item Gap vs paper-level error rates is expected under lighter training budget and reduced tuning.
+  \item Key limitations of this study:
+  \begin{itemize}
+    \item paper-scale setup was not fully matched (capacity, schedule, and tuning depth),
+    \item subset-based sweeps and single-seed reporting limit robustness,
+    \item local-spatial architecture likely needs stronger hyperparameter tuning for classification.
+  \end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Reference}
+\small
+Geoffrey Hinton. ``The Forward-Forward Algorithm: Some Preliminary Investigations.''
+arXiv:2212.13345, 2022.
+\end{frame}
+
+\end{document}

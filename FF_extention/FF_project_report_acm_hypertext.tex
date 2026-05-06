@@ -1,0 +1,394 @@
+\documentclass[sigconf]{acmart}
+
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+\acmConference[HT '26]{ACM Hypertext Conference}{September 2026}{TBD}
+\acmBooktitle{Proceedings of the ACM Hypertext Conference (HT '26)}
+\acmDOI{TBD}
+\acmISBN{TBD}
+
+\title{Extending the Forward-Forward Algorithm:\\
+Goodness Functions, Activation Functions, and Local Spatial Goodness}
+
+\author{Nikhilesh Myanapuri}
+\affiliation{%
+  \institution{Project Team}
+  \country{India}}
+\authornote{Roll No: 22110162}
+
+\author{Birudugadda Srivibhav}
+\affiliation{%
+  \institution{Project Team}
+  \country{India}}
+\authornote{Roll No: 22110050}
+
+\author{Srivathsa Vamsi Chaturvedula}
+\affiliation{%
+  \institution{Project Team}
+  \country{India}}
+\authornote{Roll No: 22110260}
+
+\author{Eswar Ganesh Koleti}
+\affiliation{%
+  \institution{Project Team}
+  \country{India}}
+\authornote{Roll No: 22110123}
+
+\begin{document}
+
+\begin{abstract}
+The Forward-Forward (FF) algorithm is a local-learning alternative to backpropagation in which each layer is trained using two forward passes: a positive pass and a negative pass. This report provides a detailed extension study of FF across three objectives: (1) goodness-function design, (2) activation-function design, and (3) local spatial goodness using locally connected FF layers. We replicate the FF supervised label-overlay setup on MNIST and run controlled sweeps with deterministic seeding. Our results show that goodness design is the strongest lever in this setting: \texttt{pnorm\_3 + relu} reaches 95.54\% test accuracy, outperforming the baseline \texttt{sum\_sq + relu} at 92.63\%. Huber-like goodness also performs strongly at 93.99\%, indicating that robust growth profiles can improve local discrimination. In activation sweeps (with fixed goodness), ReLU remains the most effective option. For local-spatial FF, however, the best observed setup reaches 57.81\% and underperforms the baseline by 34.82 percentage points. We analyze these outcomes in depth, discussing optimization dynamics, objective geometry, robustness properties, and practical failure modes of spatial-local FF in our current compute and tuning regime.
+\end{abstract}
+
+\keywords{Forward-Forward algorithm, biologically plausible learning, goodness functions, activation functions, local learning, MNIST}
+
+\maketitle
+
+\section{Introduction}
+Backpropagation has enabled modern deep learning, but it remains a poor mechanistic match to biological learning due to weight transport issues, strict symmetry assumptions, and dependence on global backward error pathways. Hinton's Forward-Forward (FF) algorithm revisits local learning by replacing the forward-backward cycle with two forward passes and layer-wise objectives \cite{hinton2022ff}. Instead of transmitting derivatives through all layers, each layer computes a local goodness signal and updates itself to prefer positive over negative data.
+
+The original FF paper establishes feasibility and identifies a set of open questions critical for scaling and robustness: goodness definition, activation nonlinearity, and local objective structures for spatial data. This report focuses exactly on these unresolved choices.
+
+Our three objectives are:
+\begin{enumerate}
+  \item \textbf{Objective 1: Goodness-function optimization}. We evaluate a broad family of goodness functions, including squared, unsquared, Huber-like, and p-norm variants.
+  \item \textbf{Objective 2: Activation-function engineering}. We test 17 activations, including Student-t negative log-density activations proposed as a promising alternative in the FF paper's future-work discussion.
+  \item \textbf{Objective 3: Local spatial goodness}. We build locally connected FF layers and evaluate whether local goodness constraints translate into stronger classification performance.
+\end{enumerate}
+
+Beyond reporting metrics, we provide a detailed interpretation of why specific choices worked (or failed), with explicit discussion of objective geometry and optimization behavior.
+
+\section{Background: Forward-Forward Algorithm}
+\subsection{Positive and Negative Passes}
+In FF, every training step uses two forward passes:
+\begin{itemize}
+  \item \textbf{Positive pass}: input paired with correct supervisory context (in our supervised setup, correct label overlay).
+  \item \textbf{Negative pass}: input paired with incorrect supervisory context.
+\end{itemize}
+Each layer is encouraged to produce high goodness for positive cases and low goodness for negative cases.
+
+\subsection{Canonical Goodness and Local Objective}
+For layer activation vector $\mathbf{y}$, the canonical goodness from the paper is:
+\begin{equation}
+  g(\mathbf{y}) = \sum_j y_j^2.
+\end{equation}
+
+Given positive goodness $g^+$ and negative goodness $g^-$ with threshold $\theta$, a logistic local objective can be written as:
+\begin{equation}
+\mathcal{L} = \log\left(1 + e^{-(g^+ - \theta)}\right) + \log\left(1 + e^{(g^- - \theta)}\right).
+\end{equation}
+
+For supervised inference with label overlay, prediction is obtained by label search:
+\begin{equation}
+\hat{y} = \arg\max_c \sum_\ell g_\ell(x, c),
+\end{equation}
+where $g_\ell$ is the goodness from layer $\ell$ for input $x$ with candidate label $c$.
+
+\subsection{Normalization Detail from the Paper}
+An important implementation note in the FF paper is that when unsquared activity objectives are used, the normalization mode should be aligned with that objective. In practice, this means L1-style normalization for unsquared formulations and L2-style normalization for squared formulations. This detail matters because mismatch between objective and normalization can distort local gradients and weaken positive-negative separability.
+
+\subsection{Why FF Is Interesting}
+FF is attractive because it:
+\begin{itemize}
+  \item avoids global backward propagation,
+  \item supports modular layer-wise updates,
+  \item naturally accommodates unknown or non-differentiable forward transforms,
+  \item connects to biologically plausible local contrastive learning principles.
+\end{itemize}
+
+However, FF performance depends strongly on objective design and data construction quality, making controlled objective studies essential.
+
+\section{Methodology}
+\subsection{Implementation}
+We implemented a reusable FF codebase in PyTorch with:
+\begin{itemize}
+  \item goodness function registry,
+  \item activation function registry,
+  \item fully connected FF layers,
+  \item locally connected spatial FF layers,
+  \item experiment runners for objective-wise sweeps.
+\end{itemize}
+
+The codebase includes deterministic seeding utilities, notebook-driven experiment pipelines, and CSV result export for reproducible reporting.
+
+\subsection{Data and Protocol}
+\begin{itemize}
+  \item Dataset: MNIST.
+  \item For Objectives 1 and 2: fully connected FF network with hidden dimensions $(512, 512, 512)$.
+  \item For Objective 3: local spatial FF network with patch-wise local blocks (no weight sharing).
+  \item Reproducibility: fixed seeds for Python random, NumPy, and PyTorch.
+  \item Strong run settings used in this report: 10 epochs, 30,000 train samples, 10,000 test samples.
+\end{itemize}
+
+\subsection{Supervised Label Overlay Setup}
+We follow the supervised FF setting where labels are injected into the input representation. For each image, the first 10 positions of the flattened input represent a one-hot label code. Positive data uses the true label; negative data uses an incorrect label sampled uniformly from remaining classes.
+
+\subsection{Objective-Wise Experimental Design}
+\paragraph{Objective 1}
+Activation is fixed to ReLU. Only goodness is changed.
+
+\paragraph{Objective 2}
+Goodness is fixed to \texttt{sum\_sq}. Only activation is changed.
+
+\paragraph{Objective 3}
+Locally connected layers process spatial patches. We compare multiple local setup variants and track both test accuracy and local goodness margin.
+
+\subsection{Metrics}
+We report:
+\begin{itemize}
+  \item test accuracy,
+  \item test error,
+  \item training loss,
+  \item positive and negative goodness (Objective 3),
+  \item goodness margin (Objective 3).
+\end{itemize}
+
+\section{Objective 1: Goodness Function Study}
+\subsection{Function Families}
+The 14 goodness functions tested can be grouped as follows:
+\begin{itemize}
+  \item \textbf{Squared family}: \texttt{sum\_sq}, \texttt{mean\_sq}, \texttt{neg\_sum\_sq}, \texttt{sqrt\_sum\_sq}, \texttt{log1p\_sum\_sq}.
+  \item \textbf{Unsquared family}: \texttt{sum\_abs}, \texttt{mean\_abs}, \texttt{neg\_sum\_abs}, \texttt{sum\_linear}, \texttt{neg\_sum\_linear}.
+  \item \textbf{Robust hybrid}: \texttt{sum\_huber\_like}.
+  \item \textbf{p-norm family}: \texttt{pnorm\_1\_5}, \texttt{pnorm\_3}.
+  \item \textbf{Smooth nonlinear sum}: \texttt{sum\_softplus}.
+\end{itemize}
+
+We compared these while fixing activation to ReLU.
+
+\begin{table*}[t]
+\caption{Objective 1 full results (sorted by test accuracy).}
+\label{tab:obj1}
+\centering
+\scriptsize
+\begin{tabular}{l l r r r}
+\toprule
+Goodness & Activation & Train Loss & Test Error & Test Accuracy \\
+\midrule
+pnorm\_3 & relu & 0.506840 & 0.0446 & 0.9554 \\
+sum\_huber\_like & relu & 0.915776 & 0.0601 & 0.9399 \\
+sum\_sq & relu & 0.557461 & 0.0737 & 0.9263 \\
+neg\_sum\_sq & relu & 0.451928 & 0.0741 & 0.9259 \\
+log1p\_sum\_sq & relu & 0.648728 & 0.0777 & 0.9223 \\
+sqrt\_sum\_sq & relu & 0.673295 & 0.0941 & 0.9059 \\
+mean\_sq & relu & 1.157837 & 0.0988 & 0.9012 \\
+mean\_abs & relu & 1.306145 & 0.1519 & 0.8481 \\
+neg\_sum\_abs & relu & 1.053865 & 0.2035 & 0.7965 \\
+neg\_sum\_linear & relu & 1.110900 & 0.2341 & 0.7659 \\
+pnorm\_1\_5 & relu & 1.012079 & 0.3024 & 0.6976 \\
+sum\_abs & relu & 1.143102 & 0.5134 & 0.4866 \\
+sum\_linear & relu & 1.145557 & 0.5487 & 0.4513 \\
+sum\_softplus & relu & 352.891398 & 0.9020 & 0.0980 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{Key finding:} \texttt{pnorm\_3 + relu} outperformed the baseline \texttt{sum\_sq + relu} by 2.91 accuracy points.
+
+\subsection{Detailed Interpretation: Why \texttt{pnorm\_3} Worked}
+We provide four complementary explanations:
+
+\paragraph{(1) Steeper energy landscape for strong features}
+For nonnegative activations (ReLU), \(\|y\|_3^3\) grows faster than \(\|y\|_2^2\) for larger magnitudes. This increases relative contribution of highly informative neurons and can sharpen decision contrast in label-search inference.
+
+\paragraph{(2) Better positive-negative separation under local training}
+FF training is fundamentally a local separation task. If the objective amplifies discriminative peaks, positive and negative goodness distributions can separate more cleanly, reducing ambiguous label rankings.
+
+\paragraph{(3) Reduced influence of medium-strength responses}
+Compared to L2, higher-order norms suppress medium activations in relative terms. This can reduce noisy evidence accumulation from weakly activated units.
+
+\paragraph{(4) Compatibility with ReLU sparsity}
+ReLU already promotes sparse, nonnegative representations. A steeper goodness function then acts as a confidence amplifier for sparse high-activation patterns.
+
+\subsection{Detailed Interpretation: Why Huber-Like Goodness Worked}
+\texttt{sum\_huber\_like} reached 93.99\% and was second best. A likely reason is robust transition behavior:
+\begin{itemize}
+  \item near zero: roughly quadratic behavior stabilizes gradients,
+  \item at larger magnitudes: more linear growth reduces over-penalization and sensitivity to outliers.
+\end{itemize}
+In FF, this trade-off can improve stability while preserving meaningful contrast between positive and negative passes.
+
+\subsection{Failure Modes in Objective 1}
+Functions like \texttt{sum\_softplus} collapsed severely (9.8\% accuracy). This suggests that merely smooth positive goodness is insufficient; objective geometry must preserve class-discriminative contrast under label search.
+
+\section{Objective 2: Activation Function Study}
+We fixed goodness to \texttt{sum\_sq} and compared 17 activation functions.
+
+\begin{table*}[t]
+\caption{Objective 2 full results (sorted by test accuracy).}
+\label{tab:obj2}
+\centering
+\scriptsize
+\begin{tabular}{l l r r r}
+\toprule
+Activation & Goodness & Train Loss & Test Error & Test Accuracy \\
+\midrule
+relu & sum\_sq & 0.557461 & 0.0737 & 0.9263 \\
+gelu & sum\_sq & 0.455380 & 0.0794 & 0.9206 \\
+silu & sum\_sq & 0.534094 & 0.0862 & 0.9138 \\
+leaky\_relu & sum\_sq & 0.412336 & 0.0881 & 0.9119 \\
+student\_t\_nll\_df5 & sum\_sq & 0.515548 & 0.0891 & 0.9109 \\
+student\_t\_nll\_df3 & sum\_sq & 0.529816 & 0.0931 & 0.9069 \\
+student\_t\_nll\_df2 & sum\_sq & 0.541876 & 0.0955 & 0.9045 \\
+tanhshrink & sum\_sq & 0.661014 & 0.0968 & 0.9032 \\
+mish & sum\_sq & 0.574569 & 0.0988 & 0.9012 \\
+bent\_identity & sum\_sq & 1.075029 & 0.1526 & 0.8474 \\
+softsign & sum\_sq & 1.109407 & 0.1810 & 0.8190 \\
+selu & sum\_sq & 1.040589 & 0.2195 & 0.7805 \\
+tanh & sum\_sq & 1.114266 & 0.2211 & 0.7789 \\
+elu & sum\_sq & 1.114191 & 0.2973 & 0.7027 \\
+hardtanh & sum\_sq & 1.210148 & 0.3102 & 0.6898 \\
+softplus & sum\_sq & 1.843963 & 0.7705 & 0.2295 \\
+squareplus & sum\_sq & 5.145962 & 0.8865 & 0.1135 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\textbf{Key finding:} ReLU remained the strongest activation in our FF setup.
+
+\subsection{Detailed Interpretation of Objective 2}
+\paragraph{Why ReLU remained best}
+ReLU likely benefited from three factors: non-saturating positive branch, sparse representation support, and optimization simplicity under local objectives.
+
+\paragraph{Why GELU/SiLU were close but lower}
+Smooth activations can improve optimization in backprop settings, but in local FF settings they may soften contrastive goodness responses, leading to slightly weaker separation.
+
+\paragraph{Student-t activations}
+Student-t negative log-density activations were competitive but not top. This indicates conceptual promise but also sensitivity to parameterization and threshold coupling.
+
+\paragraph{Low-performing activations}
+Very smooth or saturating response profiles (e.g., softplus in this setup) may blur positive-negative contrast, weakening label-search ranking.
+
+\section{Objective 3: Local Spatial Goodness}
+We evaluated a local-spatial FF model where each local block computes local goodness. We also tracked goodness margin:
+\begin{equation}
+\text{goodness margin} = \text{train\_pos\_goodness} - \text{train\_neg\_goodness}.
+\end{equation}
+
+\subsection{What Local Spatial Goodness Is Doing}
+Instead of a single global goodness over all hidden units, local spatial FF computes goodness per local patch/block. The intended effect is denser local supervision and faster representation shaping in image-like domains.
+
+\subsection{Why This Objective Is Hard}
+Local block objectives can improve representational locality but also introduce optimization tensions:
+\begin{itemize}
+  \item local optima may not align with global class objective,
+  \item patch hyperparameters (kernel, stride, channels) strongly affect information flow,
+  \item no weight sharing can increase parameter count and training instability.
+\end{itemize}
+
+\begin{table*}[t]
+\caption{Objective 3 local-spatial results.}
+\label{tab:obj3}
+\centering
+\scriptsize
+\begin{tabular}{l r r r r r r r}
+\toprule
+Setup & Epoch & Train Loss & Pos Goodness & Neg Goodness & Margin & Test Accuracy & Test Error \\
+\midrule
+unsquared\_goodness & 10 & 1.335932 & 1.094110 & 0.950601 & 0.143510 & 0.5781 & 0.4219 \\
+student\_t\_activation & 10 & 1.337863 & 2.092228 & 1.931047 & 0.161182 & 0.5159 & 0.4841 \\
+finer\_blocks & 10 & 1.363065 & 2.039513 & 1.966984 & 0.072529 & 0.4870 & 0.5130 \\
+coarse\_blocks & 10 & 1.352231 & 2.060941 & 1.947516 & 0.113425 & 0.4453 & 0.5547 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Baseline Comparison}
+Original fully connected baseline \texttt{sum\_sq + relu}: 0.9263 accuracy.
+Best local-spatial setup: 0.5781 accuracy.
+
+\textbf{Gap:} $0.9263 - 0.5781 = 0.3482$ (34.82 percentage points), indicating local-spatial FF underperformed strongly in the current configuration.
+
+\subsection{Detailed Analysis of Objective 3 Outcome}
+The current local-spatial setup did not match baseline classification quality. A notable observation is that setups with strong goodness margin did not necessarily yield best test accuracy. This indicates margin is useful as a training diagnostic but is not a standalone proxy for final classification performance under all local architectures.
+
+Potential reasons include:
+\begin{itemize}
+  \item architectural mismatch between local objectives and global label ranking,
+  \item insufficient tuning of local receptive field geometry,
+  \item optimization schedule inherited from FC setup not ideal for local model,
+  \item under-training relative to complexity introduced by no-weight-sharing local blocks.
+\end{itemize}
+
+\section{Discussion}
+The experiments collectively show that FF behavior is governed by objective geometry as much as by architecture.
+
+\subsection{Cross-Objective Synthesis}
+\begin{itemize}
+  \item \textbf{Objective 1}: largest gains came from goodness redesign, confirming that local objective shape is a first-order design choice in FF.
+  \item \textbf{Objective 2}: activation choice mattered, but less than goodness choice in our regime.
+  \item \textbf{Objective 3}: local-goodness structure requires dedicated tuning; direct transfer of FC settings is insufficient.
+\end{itemize}
+
+\subsection{Practical Implication}
+For practitioners using FF, the strongest immediate return appears to come from objective engineering (goodness design and threshold coupling) before aggressive architecture changes.
+
+\section{Threats to Validity}
+\begin{itemize}
+  \item \textbf{Internal validity}: although deterministic seeding reduces stochastic drift, single-seed results can still be brittle.
+  \item \textbf{Construct validity}: goodness margin is not always equivalent to final classification quality.
+  \item \textbf{External validity}: MNIST findings may not transfer directly to more complex datasets without architectural adaptation.
+  \item \textbf{Comparative validity}: exact parity with all paper hyperparameters was not enforced; comparisons are directional, not absolute replication claims.
+\end{itemize}
+
+\section{Limitations}
+\begin{itemize}
+  \item Full paper-scale reproduction was not attempted (capacity and schedule differences remain).
+  \item Compute limits constrained exhaustive hyperparameter sweeps.
+  \item Most reporting uses fixed-seed comparisons; multi-seed confidence intervals are pending.
+  \item Local-spatial architecture likely needs targeted tuning (patch geometry, channel count, thresholding, and optimizer settings).
+  \item We did not run full factorial interactions between goodness and activation families.
+  \item Local objective thresholds were not independently tuned per architecture depth.
+\end{itemize}
+
+\section{Future Work}
+\begin{itemize}
+  \item Multi-seed statistical analysis with confidence intervals and significance testing.
+  \item Targeted tuning of local spatial FF (kernel/stride/channel search and schedule redesign).
+  \item Hybrid objectives combining robust goodness and adaptive thresholds.
+  \item Extension to CIFAR-scale experiments with stronger data augmentation.
+  \item Evaluation of temporal decoupling and wake/sleep-style training variants.
+\end{itemize}
+
+\section{Conclusion}
+This project provides a detailed extension of the Forward-Forward algorithm across objective, activation, and architecture dimensions. The clearest practical outcome is that objective design is decisive: \texttt{pnorm\_3} and Huber-like goodness substantially improved performance relative to the baseline objective. ReLU remained the strongest activation under fixed goodness. The local-spatial variant, while conceptually aligned with FF's locality motivation, underperformed strongly in current form, highlighting that local objective success depends on careful architecture-optimization co-design. Overall, FF remains a promising framework whose performance envelope is highly design-sensitive and still far from fully explored.
+
+\appendix
+
+\section{Appendix A: Objective 1 Top Comparisons}
+\begin{itemize}
+  \item \texttt{pnorm\_3 + relu}: 95.54\%.
+  \item \texttt{sum\_huber\_like + relu}: 93.99\%.
+  \item baseline \texttt{sum\_sq + relu}: 92.63\%.
+\end{itemize}
+
+\section{Appendix B: Reproducibility Notes}
+All experiments were run from notebook pipelines with deterministic seeding for \texttt{random}, \texttt{numpy}, and \texttt{torch}. Result CSVs were exported from each objective notebook and used directly for the tables in this report.
+
+\begin{thebibliography}{9}
+
+\bibitem{hinton2022ff}
+Geoffrey Hinton.
+\newblock The Forward-Forward Algorithm: Some Preliminary Investigations.
+\newblock \emph{arXiv preprint arXiv:2212.13345}, 2022.
+
+\bibitem{lowe2019}
+Sindy Lowe, et al.
+\newblock Putting an End to End to End: Gradient-Isolated Learning of Representations.
+\newblock \emph{NeurIPS}, 2019.
+
+\bibitem{dropout}
+Nitish Srivastava, Geoffrey Hinton, Alex Krizhevsky, Ilya Sutskever, and Ruslan Salakhutdinov.
+\newblock Dropout: A Simple Way to Prevent Neural Networks from Overfitting.
+\newblock \emph{Journal of Machine Learning Research}, 15(56):1929--1958, 2014.
+
+\bibitem{goodfellow2016}
+Ian Goodfellow, Yoshua Bengio, and Aaron Courville.
+\newblock \emph{Deep Learning}.
+\newblock MIT Press, 2016.
+
+\end{thebibliography}
+
+\end{document}
